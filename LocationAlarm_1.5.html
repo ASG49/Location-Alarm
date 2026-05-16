@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!--
+  LocationAlarm_v1.5.html
+  Location Alarm v1.5
+  2026-05-16  © Tony Gozdz
+  Changelog:
+    v1.0 - 2026-05-11 - Initial release. 5 map layers, alarm marker, radius,
+                         GPS watchPosition, Web Audio beep, vibration, WakeLock removed.
+    v1.1 - 2026-05-11 - Light theme replacing dark theme.
+    v1.2 - 2026-05-13 - Copyright moved bottom-right. Marker callout removed.
+                         Improved geolocation error messages.
+    v1.3 - 2026-05-13 - Updated denied-location message for Chrome Android.
+    v1.4 - 2026-05-14 - Version number in header. Layer/radius selection highlight.
+    v1.5 - 2026-05-16 - Added Cache Visible Map Area button for offline tile storage.
+                         Tile pre-fetch via fetch() into browser HTTP cache.
+                         Copyright text updated.
+-->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Location Alarm v1.5</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --bg:       #f4f6f8;
+    --panel:    #ffffff;
+    --border:   #c8cdd4;
+    --accent:   #d17000;
+    --green:    #1a7f37;
+    --red:      #c0392b;
+    --text:     #1a1e23;
+    --muted:    #5a6270;
+    --alarm-bg: #fff3cd;
+    --alarm-bdr:#d17000;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Courier New', monospace;
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  /* ── Header ── */
+  #header {
+    background: var(--panel);
+    border-bottom: 2px solid var(--accent);
+    padding: 8px 14px 6px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  #header h1 {
+    font-size: 13px;
+    font-weight: bold;
+    color: var(--accent);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    flex: 1;
+  }
+  #header .ver {
+    font-size: 10px;
+    color: #aaaaaa;
+  }
+
+  /* ── Alarm banner ── */
+  #alarm-banner {
+    display: none;
+    background: var(--alarm-bg);
+    border-bottom: 2px solid var(--alarm-bdr);
+    padding: 10px 14px;
+    text-align: center;
+    font-size: 16px;
+    font-weight: bold;
+    color: var(--accent);
+    letter-spacing: 1px;
+    animation: pulse-banner 0.6s ease-in-out infinite alternate;
+    flex-shrink: 0;
+  }
+  #alarm-banner.active { display: block; }
+  @keyframes pulse-banner {
+    from { background: #fff3cd; }
+    to   { background: #ffe08a; }
+  }
+
+  /* ── Map ── */
+  #map {
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+  }
+
+  /* ── Bottom control panel ── */
+  #controls {
+    background: var(--panel);
+    border-top: 2px solid var(--border);
+    padding: 8px 10px 6px;
+    flex-shrink: 0;
+  }
+
+  /* Row 1: MAP label + layer select */
+  #ctrl-layer {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 5px;
+  }
+
+  /* Row 2: R label + radius + Me + START */
+  #ctrl-main {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 5px;
+  }
+
+  .lbl {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    white-space: nowrap;
+  }
+
+  select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 6px;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    flex: 1;
+  }
+  select:focus { outline: none; border-color: var(--accent); }
+
+  button {
+    background: var(--green);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    padding: 7px 12px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    cursor: pointer;
+    text-transform: uppercase;
+    white-space: nowrap;
+    transition: background 0.2s;
+  }
+  button:disabled { background: var(--border); color: var(--muted); cursor: default; }
+  button.running  { background: var(--red); }
+  button.locate   { background: var(--panel); color: var(--accent);
+                    border: 1px solid var(--accent); }
+  button.locate:hover { background: #fff3cd; }
+
+  /* Cache button — full width, amber outline style */
+  #btn-cache {
+    width: 100%;
+    background: #fff3e0;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    text-transform: none;
+    font-size: 11px;
+    letter-spacing: 0;
+    padding: 6px 10px;
+    margin-bottom: 5px;
+  }
+  #btn-cache:disabled { background: var(--border); color: var(--muted);
+                         border-color: var(--border); }
+
+  /* Status row */
+  #status-row {
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 2px;
+  }
+  #status-msg  { flex: 1; }
+  #dist-display {
+    font-size: 12px;
+    color: var(--accent);
+    font-weight: bold;
+    white-space: nowrap;
+  }
+
+  /* Copyright */
+  #copyright {
+    font-size: 10px;
+    color: #aaaaaa;
+    text-align: right;
+  }
+
+  .map-hint {
+    position: absolute;
+    bottom: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255,255,255,0.88);
+    color: var(--muted);
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    padding: 5px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 1000;
+  }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>⏱ Location Alarm</h1>
+  <span class="ver">v1.5</span>
+</div>
+
+<div id="alarm-banner">🔔 YOU HAVE REACHED YOUR WAYPOINT 🔔</div>
+
+<div id="map"></div>
+
+<div id="controls">
+
+  <!-- Row 1: Map layer -->
+  <div id="ctrl-layer">
+    <span class="lbl">Map</span>
+    <select id="layer-select">
+      <option value="osm"     selected>OpenStreetMap</option>
+      <option value="gsat">Google Satellite</option>
+      <option value="gter">Google Terrain</option>
+      <option value="ghyb">Google Hybrid</option>
+      <option value="esri">Esri Imagery</option>
+    </select>
+  </div>
+
+  <!-- Row 2: Radius + Me + Start -->
+  <div id="ctrl-main">
+    <span class="lbl">R</span>
+    <select id="radius-select">
+      <option value="25">25 m</option>
+      <option value="50" selected>50 m</option>
+      <option value="100">100 m</option>
+      <option value="200">200 m</option>
+      <option value="500">500 m</option>
+      <option value="1000">1 km</option>
+    </select>
+    <button class="locate" id="btn-locate">⌖ Me</button>
+    <button id="btn-start" disabled>Start</button>
+  </div>
+
+  <!-- Row 3: Cache button -->
+  <button id="btn-cache">💾  Cache Visible Map Area for Offline Use</button>
+
+  <!-- Row 4: Status + distance -->
+  <div id="status-row">
+    <span id="status-msg">Tap the map to set your alarm point.</span>
+    <span id="dist-display"></span>
+  </div>
+
+  <!-- Copyright -->
+  <div id="copyright">© 2026 Tony Gozdz</div>
+
+</div>
+
+<script>
+// ── Map setup ────────────────────────────────────────────────────────────────
+const map = L.map('map', { zoomControl: true, attributionControl: false });
+map.setView([42.4551, -71.5135], 15);  // Stow, MA
+
+const tileLayers = {
+  osm:  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+          {maxZoom:19, attribution:'© OSM'}),
+  gsat: L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+          {maxZoom:20, attribution:'© Google'}),
+  gter: L.tileLayer('https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}',
+          {maxZoom:20, attribution:'© Google'}),
+  ghyb: L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+          {maxZoom:20, attribution:'© Google'}),
+  esri: L.tileLayer(
+          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+          {maxZoom:19, attribution:'© Esri'})
+};
+tileLayers.osm.addTo(map);
+L.control.attribution({ prefix:'', position:'bottomleft' }).addTo(map);
+
+// ── State ────────────────────────────────────────────────────────────────────
+let alarmLatLng   = null;
+let alarmMarker   = null;
+let alarmCircle   = null;
+let posMarker     = null;
+let watchId       = null;
+let running       = false;
+let alarming      = false;
+let caching       = false;
+let audioCtx      = null;
+let oscillator    = null;
+let gainNode      = null;
+let vibrateTimer  = null;
+let scheduleTimeout = null;
+
+// ── UI refs ───────────────────────────────────────────────────────────────────
+const btnStart    = document.getElementById('btn-start');
+const btnLocate   = document.getElementById('btn-locate');
+const btnCache    = document.getElementById('btn-cache');
+const statusMsg   = document.getElementById('status-msg');
+const distEl      = document.getElementById('dist-display');
+const banner      = document.getElementById('alarm-banner');
+const radSelect   = document.getElementById('radius-select');
+const layerSelect = document.getElementById('layer-select');
+
+// ── Map hint ──────────────────────────────────────────────────────────────────
+const hintEl = document.createElement('div');
+hintEl.className = 'map-hint';
+hintEl.textContent = 'Tap map to place alarm point';
+document.getElementById('map').appendChild(hintEl);
+
+// ── Layer switcher ────────────────────────────────────────────────────────────
+let currentLayer = tileLayers.osm;
+layerSelect.addEventListener('change', () => {
+  map.removeLayer(currentLayer);
+  currentLayer = tileLayers[layerSelect.value];
+  currentLayer.addTo(map);
+});
+
+// ── Map tap → set alarm point ─────────────────────────────────────────────────
+map.on('click', (e) => {
+  if (running) return;
+  alarmLatLng = e.latlng;
+  if (alarmMarker) map.removeLayer(alarmMarker);
+  if (alarmCircle) map.removeLayer(alarmCircle);
+
+  alarmMarker = L.marker(alarmLatLng, {
+    draggable: true,
+    icon: L.divIcon({
+      className: '',
+      html: '<div style="width:20px;height:20px;background:#d17000;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,0.35);"></div>',
+      iconSize: [20,20], iconAnchor:[10,10]
+    })
+  }).addTo(map);
+
+  alarmMarker.on('drag', () => {
+    alarmLatLng = alarmMarker.getLatLng();
+    redrawCircle();
+  });
+
+  redrawCircle();
+  hintEl.style.display = 'none';
+  btnStart.disabled = false;
+  statusMsg.textContent = 'Alarm point set. Drag to reposition. Press Start.';
+});
+
+// ── Radius circle ─────────────────────────────────────────────────────────────
+function redrawCircle() {
+  const r = parseInt(radSelect.value);
+  if (alarmCircle) map.removeLayer(alarmCircle);
+  alarmCircle = L.circle(alarmLatLng, {
+    radius: r,
+    color: '#d17000',
+    fillColor: '#d17000',
+    fillOpacity: 0.10,
+    weight: 2,
+    dashArray: '6 4',
+    interactive: false        // no callout on circle tap
+  }).addTo(map);
+}
+radSelect.addEventListener('change', () => { if (alarmLatLng) redrawCircle(); });
+
+// ── Haversine ─────────────────────────────────────────────────────────────────
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 +
+            Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function fmtDist(m) {
+  return m >= 1000 ? (m/1000).toFixed(2) + ' km' : Math.round(m) + ' m';
+}
+
+// ── Audio alarm ───────────────────────────────────────────────────────────────
+function startAlarmAudio() {
+  if (oscillator) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  gainNode = audioCtx.createGain();
+  gainNode.gain.value = 0;
+  gainNode.connect(audioCtx.destination);
+  oscillator = audioCtx.createOscillator();
+  oscillator.type = 'square';
+  oscillator.frequency.value = 880;
+  oscillator.connect(gainNode);
+  oscillator.start();
+
+  function scheduleBeeps(t) {
+    gainNode.gain.setValueAtTime(0.8, t);
+    gainNode.gain.setValueAtTime(0,   t + 0.30);
+    gainNode.gain.setValueAtTime(0.8, t + 0.45);
+    gainNode.gain.setValueAtTime(0,   t + 0.75);
+    gainNode.gain.setValueAtTime(0.8, t + 0.90);
+    gainNode.gain.setValueAtTime(0,   t + 1.20);
+    scheduleTimeout = setTimeout(() => scheduleBeeps(audioCtx.currentTime), 900);
+  }
+  scheduleBeeps(audioCtx.currentTime);
+}
+
+function stopAlarmAudio() {
+  clearTimeout(scheduleTimeout);
+  if (oscillator) { try { oscillator.stop(); } catch(e){} oscillator = null; }
+  if (audioCtx)   { audioCtx.close(); audioCtx = null; }
+}
+
+// ── Vibration ─────────────────────────────────────────────────────────────────
+function startVibration() {
+  if (!navigator.vibrate) return;
+  function doVib() {
+    navigator.vibrate([400, 200, 400, 400]);
+    vibrateTimer = setTimeout(doVib, 1400);
+  }
+  doVib();
+}
+function stopVibration() {
+  clearTimeout(vibrateTimer);
+  if (navigator.vibrate) navigator.vibrate(0);
+}
+
+// ── Me button ─────────────────────────────────────────────────────────────────
+btnLocate.addEventListener('click', () => {
+  if (!navigator.geolocation) {
+    statusMsg.textContent = 'Geolocation not supported.';
+    return;
+  }
+  statusMsg.textContent = 'Finding your location…';
+  navigator.geolocation.getCurrentPosition((pos) => {
+    const ll = L.latLng(pos.coords.latitude, pos.coords.longitude);
+    map.setView(ll, 16);
+    statusMsg.textContent = 'Centered. Pan to destination and tap to set alarm.';
+  }, (err) => {
+    if (err.code === 1)
+      statusMsg.textContent = 'Denied — Chrome menu (⋮) → Settings → Site settings → Location → Allow.';
+    else if (err.code === 2)
+      statusMsg.textContent = 'GPS unavailable — move to open sky and retry.';
+    else
+      statusMsg.textContent = 'Location timeout — retry in a moment.';
+  }, { enableHighAccuracy: true, timeout: 10000 });
+});
+
+// ── Start / Stop ──────────────────────────────────────────────────────────────
+btnStart.addEventListener('click', () => {
+  if (!running) startTracking(); else stopTracking();
+});
+
+function startTracking() {
+  if (!alarmLatLng) return;
+  if (!navigator.geolocation) {
+    statusMsg.textContent = 'Geolocation not supported.';
+    return;
+  }
+  running = true; alarming = false;
+  btnStart.textContent = 'Stop';
+  btnStart.classList.add('running');
+  radSelect.disabled = true;
+  layerSelect.disabled = true;
+  statusMsg.textContent = 'Acquiring GPS…';
+  distEl.textContent = '';
+
+  watchId = navigator.geolocation.watchPosition(onPosition, onGeoError,
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
+}
+
+function stopTracking() {
+  if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+  running = false; alarming = false;
+  stopAlarmAudio(); stopVibration();
+  btnStart.textContent = 'Start';
+  btnStart.classList.remove('running');
+  radSelect.disabled = false;
+  layerSelect.disabled = false;
+  banner.classList.remove('active');
+  statusMsg.textContent = 'Stopped. Pan map to destination and tap to set alarm.';
+  distEl.textContent = '';
+}
+
+function onPosition(pos) {
+  const lat  = pos.coords.latitude;
+  const lon  = pos.coords.longitude;
+  const acc  = Math.round(pos.coords.accuracy);
+  const dist = haversine(lat, lon, alarmLatLng.lat, alarmLatLng.lng);
+  const r    = parseInt(radSelect.value);
+
+  const posLL = L.latLng(lat, lon);
+  if (!posMarker) {
+    posMarker = L.marker(posLL, {
+      icon: L.divIcon({
+        className: '',
+        html: '<div style="width:14px;height:14px;background:#1a7f37;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,0.3);"></div>',
+        iconSize:[14,14], iconAnchor:[7,7]
+      })
+    }).addTo(map);
+    map.setView(posLL, 16);
+  } else {
+    posMarker.setLatLng(posLL);
+  }
+
+  distEl.textContent = '→ ' + fmtDist(dist);
+  statusMsg.textContent = 'GPS ±' + acc + 'm  |  Distance to alarm:';
+
+  if (dist <= r) {
+    if (!alarming) {
+      alarming = true;
+      banner.classList.add('active');
+      startAlarmAudio();
+      startVibration();
+    }
+  } else {
+    if (alarming) {
+      alarming = false;
+      banner.classList.remove('active');
+      stopAlarmAudio();
+      stopVibration();
+    }
+  }
+}
+
+function onGeoError(err) {
+  if (err.code === 1)
+    statusMsg.textContent = 'Denied — Chrome menu (⋮) → Settings → Site settings → Location → Allow.';
+  else if (err.code === 2)
+    statusMsg.textContent = 'GPS unavailable — move to open sky and retry.';
+  else
+    statusMsg.textContent = 'Location timeout — retry in a moment.';
+}
+
+// ── Tile coordinate helpers ───────────────────────────────────────────────────
+function lonToTileX(lon, zoom) {
+  return Math.floor((lon + 180) / 360 * Math.pow(2, zoom));
+}
+function latToTileY(lat, zoom) {
+  const r = Math.PI / 180;
+  return Math.floor(
+    (1 - Math.log(Math.tan(lat * r) + 1 / Math.cos(lat * r)) / Math.PI)
+    / 2 * Math.pow(2, zoom)
+  );
+}
+
+// ── Cache visible map area ────────────────────────────────────────────────────
+// Uses fetch() to pre-load OSM tiles into browser HTTP cache.
+// Leaflet img requests share the same HTTP cache, so tiles are served
+// offline after caching. OSM only — Google/Esri restrict caching via ToS.
+btnCache.addEventListener('click', async () => {
+  if (caching) return;
+
+  const bounds = map.getBounds();
+  const zoom   = Math.round(map.getZoom());
+  const zMin   = Math.max(zoom - 1, 1);
+  const zMax   = Math.min(zoom + 2, 19);
+
+  // Build tile URL list for current OSM layer
+  const urls = [];
+  for (let z = zMin; z <= zMax; z++) {
+    const xMin = lonToTileX(bounds.getWest(),  z);
+    const xMax = lonToTileX(bounds.getEast(),  z);
+    const yMin = latToTileY(bounds.getNorth(), z);
+    const yMax = latToTileY(bounds.getSouth(), z);
+    for (let x = xMin; x <= xMax; x++)
+      for (let y = yMin; y <= yMax; y++)
+        urls.push(`https://tile.openstreetmap.org/${z}/${x}/${y}.png`);
+  }
+
+  if (urls.length > 4000) {
+    statusMsg.textContent = `Too many tiles (${urls.length}) — zoom in and try again.`;
+    return;
+  }
+
+  caching = true;
+  btnCache.disabled = true;
+  statusMsg.textContent = `Caching ${urls.length} tiles (zoom ${zMin}–${zMax})…`;
+  distEl.textContent = '';
+
+  let done = 0;
+  for (const url of urls) {
+    try {
+      await fetch(url, { mode: 'cors', cache: 'force-cache' });
+    } catch (e) { /* skip failed tiles */ }
+    done++;
+    if (done % 20 === 0 || done === urls.length) {
+      const pct = Math.round(done * 100 / urls.length);
+      statusMsg.textContent = `Caching… ${pct}%  (${done}/${urls.length} tiles)`;
+      await new Promise(r => setTimeout(r, 0));  // yield to UI
+    }
+  }
+
+  caching = false;
+  btnCache.disabled = false;
+  statusMsg.textContent = `✓ ${urls.length} tiles cached — area available offline.`;
+});
+
+// ── Center on user location at startup ───────────────────────────────────────
+if (navigator.geolocation) {
+  navigator.geolocation.getCurrentPosition((pos) => {
+    map.setView([pos.coords.latitude, pos.coords.longitude], 15);
+  }, () => {}, { timeout: 8000 });
+}
+</script>
+</body>
+</html>
